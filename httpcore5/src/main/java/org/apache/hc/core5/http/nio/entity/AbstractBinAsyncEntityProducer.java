@@ -30,6 +30,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Set;
 
+import org.apache.hc.core5.annotation.Contract;
+import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.nio.AsyncEntityProducer;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
@@ -41,6 +43,7 @@ import org.apache.hc.core5.util.Args;
  *
  * @since 5.0
  */
+@Contract(threading = ThreadingBehavior.SAFE_CONDITIONAL)
 public abstract class AbstractBinAsyncEntityProducer implements AsyncEntityProducer {
 
     private final ByteBuffer bytebuf;
@@ -63,6 +66,8 @@ public abstract class AbstractBinAsyncEntityProducer implements AsyncEntityProdu
      * Triggered to signal the ability of the underlying byte channel
      * to accept more data. The data producer can choose to write data
      * immediately inside the call or asynchronously at some later point.
+     * <p>
+     * {@link StreamChannel} passed to this method is threading-safe.
      *
      * @param channel the data channel capable to accepting more data.
      */
@@ -89,6 +94,18 @@ public abstract class AbstractBinAsyncEntityProducer implements AsyncEntityProdu
     }
 
     @Override
+    public long getContentLength() {
+        return -1;
+    }
+
+    @Override
+    public final int available() {
+        synchronized (bytebuf) {
+            return bytebuf.remaining();
+        }
+    }
+
+    @Override
     public final void produce(final DataStreamChannel channel) throws IOException {
         produceData(new StreamChannel<ByteBuffer>() {
 
@@ -99,39 +116,48 @@ public abstract class AbstractBinAsyncEntityProducer implements AsyncEntityProdu
                 if (chunk == 0) {
                     return 0;
                 }
-                if (bytebuf.remaining() >= chunk) {
-                    bytebuf.put(src);
-                    return chunk;
+
+                synchronized (bytebuf) {
+                    if (bytebuf.remaining() >= chunk) {
+                        bytebuf.put(src);
+                        return chunk;
+                    }
+                    int totalBytesWritten = 0;
+                    if (!bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
+                        bytebuf.flip();
+                        final int bytesWritten = channel.write(bytebuf);
+                        bytebuf.compact();
+                        totalBytesWritten += bytesWritten;
+                    }
+                    if (bytebuf.position() == 0) {
+                        final int bytesWritten = channel.write(src);
+                        totalBytesWritten += bytesWritten;
+                    }
+                    if (bytebuf.hasRemaining()) {
+                        channel.requestOutput();
+                    }
+                    return totalBytesWritten;
                 }
-                int totalBytesWritten = 0;
-                if (!bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
-                    bytebuf.flip();
-                    final int bytesWritten = channel.write(bytebuf);
-                    bytebuf.compact();
-                    totalBytesWritten += bytesWritten;
-                }
-                if (bytebuf.position() == 0) {
-                    final int bytesWritten = channel.write(src);
-                    totalBytesWritten += bytesWritten;
-                }
-                return totalBytesWritten;
+
             }
 
             @Override
             public void endStream() throws IOException {
                 endStream = true;
+                channel.requestOutput();
             }
 
         });
 
-        if (endStream || !bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
-            bytebuf.flip();
-            channel.write(bytebuf);
-            bytebuf.compact();
-        }
-        if (bytebuf.position() == 0 && endStream) {
-            channel.endStream();
+        synchronized (bytebuf) {
+            if (endStream || !bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
+                bytebuf.flip();
+                channel.write(bytebuf);
+                bytebuf.compact();
+            }
+            if (bytebuf.position() == 0 && endStream) {
+                channel.endStream();
+            }
         }
     }
-
 }

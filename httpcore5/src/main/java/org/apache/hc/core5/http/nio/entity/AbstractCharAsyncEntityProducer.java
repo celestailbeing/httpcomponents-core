@@ -35,6 +35,8 @@ import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
+import org.apache.hc.core5.annotation.Contract;
+import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.nio.AsyncEntityProducer;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
@@ -46,6 +48,7 @@ import org.apache.hc.core5.util.Args;
  *
  * @since 5.0
  */
+@Contract(threading = ThreadingBehavior.SAFE_CONDITIONAL)
 public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProducer {
 
     private enum State { ACTIVE, FLUSHING, END_STREAM }
@@ -56,7 +59,6 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
     private final int fragmentSizeHint;
     private final ContentType contentType;
     private final CharsetEncoder charsetEncoder;
-    private final StreamChannel<CharBuffer> charDataStream;
 
     private volatile State state;
 
@@ -73,25 +75,6 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
             charset = StandardCharsets.US_ASCII;
         }
         this.charsetEncoder = charset.newEncoder();
-        this.charDataStream = new StreamChannel<CharBuffer>() {
-
-            @Override
-            public int write(final CharBuffer src) throws IOException {
-                Args.notNull(src, "Buffer");
-                final int p = src.position();
-                final CoderResult result = charsetEncoder.encode(src, bytebuf, false);
-                if (result.isError()) {
-                    result.throwException();
-                }
-                return src.position() - p;
-            }
-
-            @Override
-            public void endStream() throws IOException {
-                state = State.FLUSHING;
-            }
-
-        };
         this.state = State.ACTIVE;
     }
 
@@ -99,6 +82,8 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
      * Triggered to signal the ability of the underlying char channel
      * to accept more data. The data producer can choose to write data
      * immediately inside the call or asynchronously at some later point.
+     * <p>
+     * {@link StreamChannel} passed to this method is threading-safe.
      *
      * @param channel the data channel capable to accepting more data.
      */
@@ -115,6 +100,11 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
     }
 
     @Override
+    public long getContentLength() {
+        return -1;
+    }
+
+    @Override
     public boolean isChunked() {
         return false;
     }
@@ -125,30 +115,63 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
     }
 
     @Override
+    public final int available() {
+        synchronized (bytebuf) {
+            return bytebuf.remaining();
+        }
+    }
+
+    @Override
     public final void produce(final DataStreamChannel channel) throws IOException {
-        if (state.compareTo(State.ACTIVE) == 0) {
-            produceData(charDataStream);
+        if (state == State.ACTIVE) {
+            produceData(new StreamChannel<CharBuffer>() {
+
+                @Override
+                public int write(final CharBuffer src) throws IOException {
+                    Args.notNull(src, "Buffer");
+                    synchronized (bytebuf) {
+                        final int p = src.position();
+                        final CoderResult result = charsetEncoder.encode(src, bytebuf, false);
+                        if (result.isError()) {
+                            result.throwException();
+                        }
+                        if (bytebuf.hasRemaining()) {
+                            channel.requestOutput();
+                        }
+                        return src.position() - p;
+                    }
+                }
+
+                @Override
+                public void endStream() throws IOException {
+                    state = State.FLUSHING;
+                    channel.requestOutput();
+                }
+
+            });
         }
-        if (state.compareTo(State.ACTIVE) > 0 || !bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
-            bytebuf.flip();
-            channel.write(bytebuf);
-            bytebuf.compact();
-        }
-        if (state.compareTo(State.FLUSHING) == 0) {
-            final CoderResult result = charsetEncoder.encode(EMPTY, bytebuf, true);
-            if (result.isError()) {
-                result.throwException();
-            } else if (result.isUnderflow()) {
-                final CoderResult result2 = charsetEncoder.flush(bytebuf);
-                if (result2.isError()) {
+        synchronized (bytebuf) {
+            if (state.compareTo(State.ACTIVE) > 0 || !bytebuf.hasRemaining() || bytebuf.position() >= fragmentSizeHint) {
+                bytebuf.flip();
+                channel.write(bytebuf);
+                bytebuf.compact();
+            }
+            if (state.compareTo(State.FLUSHING) == 0) {
+                final CoderResult result = charsetEncoder.encode(EMPTY, bytebuf, true);
+                if (result.isError()) {
                     result.throwException();
-                } else if (result2.isUnderflow()) {
-                    state = State.END_STREAM;
+                } else if (result.isUnderflow()) {
+                    final CoderResult result2 = charsetEncoder.flush(bytebuf);
+                    if (result2.isError()) {
+                        result.throwException();
+                    } else if (result2.isUnderflow()) {
+                        state = State.END_STREAM;
+                    }
                 }
             }
-        }
-        if (bytebuf.position() == 0 && state.compareTo(State.END_STREAM) == 0) {
-            channel.endStream();
+            if (bytebuf.position() == 0 && state.compareTo(State.END_STREAM) == 0) {
+                channel.endStream();
+            }
         }
     }
 
@@ -157,8 +180,10 @@ public abstract class AbstractCharAsyncEntityProducer implements AsyncEntityProd
 
     @Override
     public final void releaseResources() {
-        charsetEncoder.reset();
-        state = State.ACTIVE;
+        synchronized (bytebuf) {
+            charsetEncoder.reset();
+            state = State.ACTIVE;
+        }
         releaseResourcesInternal();
     }
 

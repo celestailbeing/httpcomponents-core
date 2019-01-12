@@ -75,16 +75,6 @@ public class StringAsyncEntityProducer extends AbstractCharAsyncEntityProducer {
     }
 
     @Override
-    public long getContentLength() {
-        return -1;
-    }
-
-    @Override
-    public int available() {
-        return Integer.MAX_VALUE;
-    }
-
-    @Override
     protected void produceData(final StreamChannel<CharBuffer> channel) throws IOException {
         Asserts.notNull(channel, "Channel");
         channel.write(content);

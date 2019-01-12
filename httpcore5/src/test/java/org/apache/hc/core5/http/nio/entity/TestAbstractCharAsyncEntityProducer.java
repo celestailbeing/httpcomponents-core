@@ -73,16 +73,6 @@ public class TestAbstractCharAsyncEntityProducer {
         }
 
         @Override
-        public long getContentLength() {
-            return -1;
-        }
-
-        @Override
-        public int available() {
-            return Integer.MAX_VALUE;
-        }
-
-        @Override
         public void failed(final Exception cause) {
         }
 

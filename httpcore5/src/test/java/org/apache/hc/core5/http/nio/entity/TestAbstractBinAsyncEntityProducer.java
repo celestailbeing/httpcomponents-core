@@ -31,8 +31,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-import org.apache.hc.core5.http.WritableByteChannelMock;
 import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.WritableByteChannelMock;
 import org.apache.hc.core5.http.nio.AsyncEntityProducer;
 import org.apache.hc.core5.http.nio.BasicDataStreamChannel;
 import org.apache.hc.core5.http.nio.DataStreamChannel;
@@ -70,16 +70,6 @@ public class TestAbstractBinAsyncEntityProducer {
             if (count >= content.length) {
                 channel.endStream();
             }
-        }
-
-        @Override
-        public long getContentLength() {
-            return -1;
-        }
-
-        @Override
-        public int available() {
-            return Integer.MAX_VALUE;
         }
 
         @Override

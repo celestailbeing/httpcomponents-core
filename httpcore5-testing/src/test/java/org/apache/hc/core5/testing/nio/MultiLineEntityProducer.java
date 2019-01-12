@@ -55,16 +55,6 @@ public class MultiLineEntityProducer extends AbstractCharAsyncEntityProducer {
     }
 
     @Override
-    public long getContentLength() {
-        return -1;
-    }
-
-    @Override
-    public int available() {
-        return Integer.MAX_VALUE;
-    }
-
-    @Override
     protected void produceData(final StreamChannel<CharBuffer> channel) throws IOException {
         while (charbuf.remaining() > text.length() + 2 && count < total) {
             charbuf.put(text + "\r\n");
